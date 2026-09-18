@@ -47,14 +47,6 @@ typedef enum {
 	Stopping
 } DisplayState;
 
-typedef struct {
-	uint32_t magic;          // 4 bytes
-	uint32_t sequence;       // 4 bytes
-	User_inputs payload;     // 16 bytes
-	uint32_t crc32;          // 4 bytes
-	uint32_t reserved;       // 4 bytes (Padding para alinhar em 32 bytes)
-} __attribute__((aligned(8))) FlashRecord_t;
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -65,18 +57,6 @@ typedef struct {
 #define TARGET_COUNT      ((uint32_t)(COUNTS_PER_REV * TARGET_REVS))  // 2.400.000
 #define CONTROL_PERIOD_S 0.002f
 
-#define RECORD_MAGIC_NUMBER     (0xA55A1234U)
-
-/* --- Configuração de Páginas (Exemplo para STM32G4 128 KB Flash) --- */
-#define FLASH_BANK_TARGET       FLASH_BANK_1
-#define PAGE_A_NUM              (62U)
-#define PAGE_A_ADDR             (0x0801F000U)
-
-#define PAGE_B_NUM              (63U)
-#define PAGE_B_ADDR             (0x0801F800U)
-
-#define FLASH_USER_PAGE_NUM     (63U)
-#define PAGE_SIZE_BYTES         (2048U)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -115,17 +95,9 @@ static DisplayState state = Start; // Modes
 /* --- Variáveis de Estado --- */
 volatile User_inputs parametros;
 
-static uint32_t current_sequence = 0;
-static uint8_t active_page = 0; // 0 = A, 1 = B
 
-static const User_inputs temp_params = { .Target_Counts = 0, .RPM = 0,
-		.Rise_time = 0, .Fall_time = 0, .Offset_Counts = 0 };
-//DEBUG
-int32_t *timer6 = &TIM6->CNT;
 
-/* Valores padrão caso a memória nunca tenha sido gravada */
-static const User_inputs default_params = { .Target_Counts = 0, .RPM = 0,
-		.Rise_time = 0, .Fall_time = 0, .Offset_Counts = 0 };
+
 volatile bool lcd_needs_update = true; // Começa como true para desenhar a primeira vez
 
 
@@ -143,214 +115,11 @@ static void MX_TIM4_Init(void);
 static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
 
-static void PVD_Config(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* FLASH -------------------------------------------------------------*/
-#define RECORD_SIZE             (32U) // Tamanho exato da struct FlashRecord_t
-#define RECORDS_PER_PAGE        (PAGE_SIZE_BYTES / RECORD_SIZE) // 64 gravações por página
-
-/* --- Variáveis de Estado PVD --- */
-static volatile bool power_fail_detected = false;
-
-/* --- Cálculo de CRC32 em Software (Padrão IEEE 802.3) --- */
-static uint32_t Compute_CRC32(const uint8_t *data, size_t length) {
-	uint32_t crc = 0xFFFFFFFFU;
-	for (size_t i = 0; i < length; i++) {
-		crc ^= data[i];
-		for (uint8_t j = 0; j < 8; j++) {
-			if (crc & 1)
-				crc = (crc >> 1) ^ 0xEDB88320U;
-			else
-				crc >>= 1;
-		}
-	}
-	return ~crc;
-}
-
-/* --- Validação de Bloco de Flash --- */
-static bool Is_Record_Valid(uint32_t record_addr, FlashRecord_t *out_record) {
-	memcpy(out_record, (const void*) record_addr, sizeof(FlashRecord_t));
-
-	if (out_record->magic != RECORD_MAGIC_NUMBER) {
-		return false;
-	}
-
-	// Calcula o CRC cobrindo magic + sequence + payload (24 bytes iniciais)
-	uint32_t expected_crc = Compute_CRC32((const uint8_t*) out_record,
-			sizeof(uint32_t) + sizeof(uint32_t) + sizeof(User_inputs));
-
-	return (expected_crc == out_record->crc32);
-}
-
-/* --- Busca o último registro válido na página --- */
-static bool Scan_Page(uint32_t page_addr, uint32_t *highest_seq,
-		User_inputs *best_data) {
-	FlashRecord_t temp_record;
-	bool found_any = false;
-	*highest_seq = 0;
-
-	// Varre os 64 slots possíveis na página
-	for (uint32_t i = 0; i < RECORDS_PER_PAGE; i++) {
-		uint32_t slot_addr = page_addr + (i * RECORD_SIZE);
-
-		// Se encontrou espaço virgem, podemos parar a busca nesta página
-		if (*(uint64_t*) slot_addr == 0xFFFFFFFFFFFFFFFFULL) {
-			break;
-		}
-
-		// Se tem dados, verifica integridade
-		if (Is_Record_Valid(slot_addr, &temp_record)) {
-			if (!found_any || temp_record.sequence >= *highest_seq) {
-				*highest_seq = temp_record.sequence;
-				*best_data = temp_record.payload;
-				found_any = true;
-			}
-		}
-	}
-	return found_any;
-}
-
-/* --- Apaga uma página inteira de Flash --- */
-static bool Erase_Page(uint32_t page_num) {
-	FLASH_EraseInitTypeDef erase;
-	uint32_t pageError = 0;
-
-	if (power_fail_detected || __HAL_PWR_GET_FLAG(PWR_FLAG_PVDO))
-		return false;
-
-	HAL_FLASH_Unlock();
-	__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ALL_ERRORS);
-	erase.TypeErase = FLASH_TYPEERASE_PAGES;
-	erase.Banks = FLASH_BANK_TARGET;
-	erase.Page = page_num;
-	erase.NbPages = 1;
-
-	if (HAL_FLASHEx_Erase(&erase, &pageError) != HAL_OK) {
-		HAL_FLASH_Lock();
-		return false;
-	}
-	HAL_FLASH_Lock();
-	return true;
-}
-
-/* --- Grava os 32 bytes no endereço específico da página --- */
-static bool Program_Record(uint32_t addr, const FlashRecord_t *record) {
-	if (power_fail_detected || __HAL_PWR_GET_FLAG(PWR_FLAG_PVDO))
-		return false;
-
-	HAL_FLASH_Unlock();
-	__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ALL_ERRORS);
-
-	const uint64_t *src = (const uint64_t*) record;
-	uint32_t num_double_words = sizeof(FlashRecord_t) / sizeof(uint64_t);
-
-	for (uint32_t i = 0; i < num_double_words; i++) {
-		if (power_fail_detected) {
-			HAL_FLASH_Lock();
-			return false;
-		}
-		if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, addr + (i * 8),
-				src[i]) != HAL_OK) {
-			HAL_FLASH_Lock();
-			return false;
-		}
-	}
-	HAL_FLASH_Lock();
-	return true;
-}
-
-/* --- Função de Salvamento (Apenas anexa ou faz o Ping-Pong) --- */
-_Bool Storage_Save(void) {
-	FlashRecord_t novo_bloco;
-
-	novo_bloco.magic = RECORD_MAGIC_NUMBER;
-	novo_bloco.sequence = current_sequence + 1;
-	novo_bloco.payload = parametros;
-	novo_bloco.reserved = 0x00000000U;
-
-	novo_bloco.crc32 = Compute_CRC32((const uint8_t*) &novo_bloco,
-			sizeof(uint32_t) + sizeof(uint32_t) + sizeof(User_inputs));
-
-	uint32_t active_addr = (active_page == 0) ? PAGE_A_ADDR : PAGE_B_ADDR;
-	uint32_t next_page_num = (active_page == 0) ? PAGE_B_NUM : PAGE_A_NUM;
-	uint32_t next_page_addr = (active_page == 0) ? PAGE_B_ADDR : PAGE_A_ADDR;
-
-	uint32_t target_addr = 0;
-
-	// Busca o primeiro slot vazio na página atual
-	for (uint32_t i = 0; i < RECORDS_PER_PAGE; i++) {
-		uint32_t slot = active_addr + (i * RECORD_SIZE);
-		if (*(uint64_t*) slot == 0xFFFFFFFFFFFFFFFFULL) {
-			target_addr = slot;
-			break;
-		}
-	}
-
-	// Se a página está cheia (target_addr = 0), faz o Ping-Pong
-	if (target_addr == 0) {
-		if (!Erase_Page(next_page_num))
-			return false;
-
-		target_addr = next_page_addr; // O novo slot é o início da página limpa
-		active_page = (active_page == 0) ? 1 : 0; // Alterna a página ativa
-	}
-
-	// Grava os dados
-	if (!Program_Record(target_addr, &novo_bloco)) {
-		return false;
-	}
-
-	// Validação final de segurança
-	FlashRecord_t verify_block;
-	if (Is_Record_Valid(target_addr, &verify_block)) {
-		current_sequence++;
-		return true;
-	}
-
-	return false;
-}
-
-/* --- Inicialização e Recuperação no Boot --- */
-void Storage_Init(void) {
-	User_inputs payload_A, payload_B;
-	uint32_t seq_A = 0, seq_B = 0;
-
-	bool valid_A = Scan_Page(PAGE_A_ADDR, &seq_A, &payload_A);
-	bool valid_B = Scan_Page(PAGE_B_ADDR, &seq_B, &payload_B);
-
-	if (valid_A && valid_B) {
-		if (seq_A >= seq_B) {
-			parametros = payload_A;
-			current_sequence = seq_A;
-			active_page = 0;
-		} else {
-			parametros = payload_B;
-			current_sequence = seq_B;
-			active_page = 1;
-		}
-	} else if (valid_A) {
-		parametros = payload_A;
-		current_sequence = seq_A;
-		active_page = 0;
-	} else if (valid_B) {
-		parametros = payload_B;
-		current_sequence = seq_B;
-		active_page = 1;
-	} else {
-		// Memória virgem, carrega defaults e formata a Página A
-		parametros = default_params;
-		current_sequence = 0;
-		active_page = 0;
-		Erase_Page(PAGE_A_NUM);
-		Storage_Save(); // Grava primeira versão no slot 0 da página A
-	}
-}
-
-/*   ENDREGION FLASH */
 
 /* USER CODE END 0 */
 
@@ -390,7 +159,6 @@ int main(void) {
 	MX_TIM4_Init();
 	MX_TIM6_Init();
 	/* USER CODE BEGIN 2 */
-	PVD_Config();
 
 	// 2º Inicializa a Flash e carrega os parâmetros salvos
 	//  Storage_Init();
@@ -404,7 +172,6 @@ int main(void) {
 	lcd_send_string("Iniciado ");
 	lcd_put_cur(1, 0);
 	char buffer[16];
-	uint8_t i = 0;
 
 #define NUM_LEITURAS 100
 	float historico_rpm[NUM_LEITURAS] = { 0 }; // Array preenchido com zeros
@@ -456,12 +223,8 @@ int main(void) {
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
-//	HAL_TIM_Base_Start_IT(&htim3);
-//	HAL_TIM_OC_Start_IT(&htim2, TIM_CHANNEL_3);
-//	HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
 
 	TIM1->CCR1 = 0;
-//	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 
 	/* USER CODE BEGIN WHILE */
 
@@ -493,8 +256,7 @@ int main(void) {
 			indice = 0; // Wrap around to the beginning of the array
 		}
 
-		// Determine the sign of the current increment multiplier for display formatting
-		char sin = (increment[index_inc] > 0 ? '+' : '-');
+
 
 		/* ----------------------------------------------------------------------
 		 * SYSTEM STATE MACHINE & UI HANDLER
@@ -518,7 +280,7 @@ int main(void) {
 				switch (tela_atual) {
 				case 0:
 					sprintf(buffer, "Target: %d      ",
-							parametros.Target_Counts);
+							(int)parametros.Target_Counts);
 					break;
 				case 1:
 					sprintf(buffer, "RPM: %d         ", (int) parametros.RPM);
@@ -556,7 +318,7 @@ int main(void) {
 				lcd_send_string(buffer);
 
 				// Second line: Current parameter value
-				sprintf(buffer, "%d counts      ", parametros.Target_Counts);
+				sprintf(buffer, "%d counts      ", (int)parametros.Target_Counts);
 				lcd_put_cur(1, 0);
 				lcd_send_string(buffer);
 
@@ -573,7 +335,7 @@ int main(void) {
 						abs(increment[index_inc]));
 				lcd_send_string(buffer);
 
-				sprintf(buffer, "%d ms          ", parametros.Rise_time);
+				sprintf(buffer, "%d ms          ", (int)parametros.Rise_time);
 				lcd_put_cur(1, 0);
 				lcd_send_string(buffer);
 
@@ -590,7 +352,7 @@ int main(void) {
 						abs(increment[index_inc]));
 				lcd_send_string(buffer);
 
-				sprintf(buffer, "%d ms          ", parametros.Fall_time);
+				sprintf(buffer, "%d ms          ",(int) parametros.Fall_time);
 				lcd_put_cur(1, 0);
 				lcd_send_string(buffer);
 
@@ -607,7 +369,7 @@ int main(void) {
 						abs(increment[index_inc]));
 				lcd_send_string(buffer);
 
-				sprintf(buffer, "%d counts      ", parametros.Offset_Counts);
+				sprintf(buffer, "%d counts      ", (int)parametros.Offset_Counts);
 				lcd_put_cur(1, 0);
 				lcd_send_string(buffer);
 
@@ -1251,36 +1013,7 @@ int main(void) {
 		}
 	}
 
-	static void PVD_Config(void) {
-		PWR_PVDTypeDef sConfigPVD = { 0 };
 
-		__HAL_RCC_PWR_CLK_ENABLE();
-
-		// Dispara interrupção quando VDD cair abaixo de ~2.8V (Nível 5)
-		sConfigPVD.PVDLevel = PWR_PVDLEVEL_5;
-		sConfigPVD.Mode = PWR_PVD_MODE_IT_RISING_FALLING;
-		HAL_PWR_ConfigPVD(&sConfigPVD);
-
-		HAL_PWR_EnablePVD();
-
-		// Habilita a interrupção no NVIC
-		HAL_NVIC_SetPriority(PVD_PVM_IRQn, 0, 0);
-		HAL_NVIC_EnableIRQ(PVD_PVM_IRQn);
-	}
-
-	void HAL_PWR_PVDCallback(void) {
-		if (__HAL_PWR_GET_FLAG(PWR_FLAG_PVDO)) {
-			// Tensão caiu abaixo do limite seguro:
-			// 1. Sinaliza a rotina Storage_Save para abortar
-			power_fail_detected = true;
-
-			// 2. Trava a Flash fisicamente
-			HAL_FLASH_Lock();
-		} else {
-			// Tensão voltou ao normal
-			power_fail_detected = false;
-		}
-	}
 
 	void SendChar(char c) {
 		while (!(USART3->ISR & USART_ISR_TXE_TXFNF)) {

@@ -99,6 +99,118 @@ class node_hal,node_timhal,node_gpiohal,node_user,node_buttons,node_motor,node_l
 - LCD1602 character display
 - Push buttons for user input
 
+
+```mermaid
+
+graph TD
+    %% Fonte de Alimentação e Terra Gerais
+    subgraph Power_Supply ["Alimentação"]
+        VCC["VCC (3.3V / 5V)"]
+        GND["GND"]
+    end
+
+    %% Microcontrolador STM32
+    subgraph STM32 ["Microcontrolador STM32"]
+        %% Timers
+        subgraph Perif_TIM ["Timers"]
+            TIM1_CH1["TIM1 CH1 (PWM)"]
+            TIM2_ENC["TIM2 CH1/CH2 (Encoder)"]
+            TIM2_OC3["TIM2 CH3 (Output Compare)"]
+            TIM3_IT["TIM3 (Base de Tempo / PID)"]
+            TIM4_TIM["TIM4 (Base de Tempo)"]
+            TIM6_IT["TIM6 (Detecção Long Press)"]
+        end
+
+        %% GPIO Out
+        subgraph GPIO_Out ["Saídas GPIO"]
+            LCD_DATA["PA (D4, D5, D6, D7)"]
+            LCD_CTRL["PB (RS, RW, EN)"]
+        end
+
+        %% GPIO In / EXTI
+        subgraph GPIO_In ["Entradas GPIO / EXTI"]
+            EXTI0["EXTI0 (BT_CONFIG)"]
+            EXTI4["EXTI4 (BT_DEC)"]
+            EXTI_SET["EXTI (BT_SET)"]
+        end
+
+        %% Comunicação
+        subgraph Comms ["Interface Serial"]
+            USART1_TXRX["USART1 (TX / RX)"]
+            BSP_COM["COM1 / BSP"]
+        end
+    end
+
+    %% Periféricos Externos
+    subgraph Interfaces_Entrada ["Interface de Usuário - Entradas"]
+        BT1["Botão Config (BT_CONFIG)\nPull-Up Externo/Interno"]
+        BT2["Botão Decremento/Mult (BT_DEC)\nPull-Up Externo/Interno"]
+        BT3["Botão Set/Start-Stop (BT_SET)\nPull-Up Externo/Interno"]
+    end
+
+    subgraph Display_LCD ["Display LCD 1602 (Modo 4-bits)"]
+        LCD_DISP["LCD 16x2"]
+    end
+
+    subgraph Driver_Motor ["Acionamento de Carga"]
+        MOTOR_DRIVER["Driver do Motor DC\n(Ponte H / MOSFET)"]
+        MOTOR["Motor DC"]
+    end
+
+    subgraph Feedback_Sensor ["Realimentação"]
+        ENCODER["Encoder Quadratura\n(Canal A & Canal B)"]
+    end
+
+    subgraph Periferico_UART ["Comunicação Externa"]
+        UART_DEV["Dispositivo Serial / PC\n(115200 / 9600 baud)"]
+    end
+
+    %% Conexões Elétricas e Sinalização
+    
+    %% Botões
+    BT1 -->|Pull-Down na pressão| EXTI0
+    BT2 -->|Pull-Down na pressão| EXTI4
+    BT3 -->|Pull-Down na pressão| EXTI_SET
+    GND --- BT1
+    GND --- BT2
+    GND --- BT3
+
+    %% Display
+    LCD_DATA -->|Dados 4-bits| LCD_DISP
+    LCD_CTRL -->|Sinais de Controle| LCD_DISP
+    VCC --- LCD_DISP
+    GND --- LCD_DISP
+
+    %% Actuação Motor
+    TIM1_CH1 -->|Sinal PWM| MOTOR_DRIVER
+    MOTOR_DRIVER -->|Tensão de Potência| MOTOR
+    VCC --- MOTOR_DRIVER
+    GND --- MOTOR_DRIVER
+
+    %% Feedback Encoder
+    MOTOR -.->|Eixo Mecânico| ENCODER
+    ENCODER -->|Pulsos Canal A/B| TIM2_ENC
+    VCC --- ENCODER
+    GND --- ENCODER
+
+    %% Serial
+    USART1_TXRX <-->|Sinal TTL UART| UART_DEV
+    BSP_COM <--> UART_DEV
+
+    %% Estilização do Diagrama
+    classDef stm32fill fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#fff;
+    classDef powerfill fill:#b91c1c,stroke:#f87171,stroke-width:1px,color:#fff;
+    classDef extfill fill:#0f766e,stroke:#2dd4bf,stroke-width:1px,color:#fff;
+
+    class STM32 stm32fill;
+    class Power_Supply powerfill;
+    class Interfaces_Entrada,Display_LCD,Driver_Motor,Feedback_Sensor,Periferico_UART extfill;
+
+
+
+```
+
+
 ## Project Structure
 
 ```

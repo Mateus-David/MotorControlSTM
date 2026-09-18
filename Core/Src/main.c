@@ -81,8 +81,14 @@ volatile encoder Encoder;
 volatile float voltas_totais = 0;
 float media_rpm = 0;
 volatile uint32_t pwm;
+
+//debug
+volatile uint32_t  voltas_tim ;
 // PID
 volatile PIDController PID;
+ int32_t pos_antiga = 0;
+ float rpm_rampa = 0.0f; // Setpoint dinâmico (a rampa) que o PID vai perseguir
+ volatile uint8_t fall_end = 0;
 
 volatile float rpm_filtrado_pid;
 
@@ -173,20 +179,20 @@ int main(void) {
 	lcd_put_cur(1, 0);
 	char buffer[16];
 
-#define NUM_LEITURAS 100
+#define NUM_LEITURAS 10
 	float historico_rpm[NUM_LEITURAS] = { 0 }; // Array preenchido com zeros
 	float soma_rpm = 0.0f;
 	uint8_t indice = 0;
 
 	parametros.Fall_time = 2000;
-	parametros.Offset_Counts = 5;
+	parametros.Offset_Counts = 2;
 	parametros.RPM = 20;
-	parametros.Rise_time = 1000;
-	parametros.Target_Counts = 5000;
+	parametros.Rise_time = 2000;
+	parametros.Target_Counts = 1;
 
 	// 1. Configuração dos Ganhos do Controlador (Estes valores precisarão ser ajustados na prática)
-	PID.Kp = 16.0f;
-	PID.Ki = 3.0f;
+	PID.Kp = 12.6f;
+	PID.Ki = 68.04f;
 	PID.Kd = 0.0f;
 
 	// 2. Constante de tempo do filtro passa-baixa da Derivada
@@ -204,7 +210,7 @@ int main(void) {
 	// 5. Limites do Integrador (Anti-Windup)
 	// Impede que o erro integral cresça infinitamente caso o motor trave.
 	PID.limMinInt = 0.0f;
-	PID.limMaxInt = 100.0f;
+	PID.limMaxInt = 80.0f;
 
 	/* USER CODE END 2 */
 
@@ -223,7 +229,6 @@ int main(void) {
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
-
 	TIM1->CCR1 = 0;
 
 	/* USER CODE BEGIN WHILE */
@@ -239,8 +244,7 @@ int main(void) {
 		// Note: The 'historico_rpm', 'soma_rpm', and 'indice' variables should be
 		// declared as static or global before the while loop.
 		// Convert raw encoder velocity (counts per control period) into RPM
-		float rpm_atual = (Encoder.velocity / COUNTS_PER_REV)
-				* (60.0f / CONTROL_PERIOD_S);
+		float rpm_atual = rpm_filtrado_pid;
 
 		// Update the running sum and the history buffer
 		soma_rpm -= historico_rpm[indice]; // Remove the oldest reading from the running sum
@@ -414,24 +418,36 @@ int main(void) {
 			// Ensure flag is cleared if we just transitioned from a config state
 			lcd_needs_update = false;
 
+
+		if(fall_end){
+			state=Stopping;
+		}
 			break;
 		}
-
 		case Initializing: {
 
 
 			PIDController_Init(&PID);
 
+
 			/* --- Peripheral Initialization Phase --- */
+
+
+
+			// Start Timer 2 Output Compare in interrupt mode (Often used to trigger precise velocity measurements)
+			TIM2->CCR3 = (parametros.Target_Counts + parametros.Offset_Counts)*4000;
+			TIM2->CNT = 0;
+			pos_antiga = 0;
+			rpm_rampa = 0;
+			fall_end = 0;
+			HAL_TIM_OC_Start_IT(&htim2, TIM_CHANNEL_3);
+			// Start Timer 2 in Encoder interface mode to track quadrature encoder pulses
+			HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
+			HAL_Delay(10);
+			update_encoder(&Encoder, &htim2);
 
 			// Start Timer 3 in interrupt mode (Likely used for the main control loop / PID execution time base)
 			HAL_TIM_Base_Start_IT(&htim3);
-
-			// Start Timer 2 Output Compare in interrupt mode (Often used to trigger precise velocity measurements)
-			HAL_TIM_OC_Start_IT(&htim2, TIM_CHANNEL_3);
-
-			// Start Timer 2 in Encoder interface mode to track quadrature encoder pulses
-			HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
 
 			// Initialize Motor PWM duty cycle (Capture/Compare Register 1) to 0% (stopped)
 			TIM1->CCR1 = 0;
@@ -446,8 +462,10 @@ int main(void) {
 		case Stopping: {
 			TIM1->CCR1 = 0;
 			HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
-			HAL_TIM_Base_Stop_IT(&htim3);
-			HAL_TIM_OC_Start_IT(&htim2, TIM_CHANNEL_3);
+
+			HAL_TIM_OC_Stop_IT(&htim2, TIM_CHANNEL_3);
+
+			HAL_TIM_OC_Stop_IT(&htim2, TIM_CHANNEL_3);
 			HAL_TIM_Encoder_Stop(&htim2, TIM_CHANNEL_ALL);
 
 			state = Start;
@@ -616,11 +634,11 @@ int main(void) {
 		sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
 		sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
 		sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-		sConfig.IC1Filter = 5;
+		sConfig.IC1Filter = 10;
 		sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
 		sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
 		sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-		sConfig.IC2Filter = 5;
+		sConfig.IC2Filter = 10;
 		if (HAL_TIM_Encoder_Init(&htim2, &sConfig) != HAL_OK) {
 			Error_Handler();
 		}
@@ -639,7 +657,6 @@ int main(void) {
 			Error_Handler();
 		}
 		/* USER CODE BEGIN TIM2_Init 2 */
-		TIM2->CCR3 = parametros.Target_Counts;
 
 		/* USER CODE END TIM2_Init 2 */
 
@@ -847,7 +864,7 @@ int main(void) {
 
 		/*Configure GPIO pin : BT_CONFIG_Pin */
 		GPIO_InitStruct.Pin = BT_CONFIG_Pin;
-		GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+		GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
 		GPIO_InitStruct.Pull = GPIO_PULLUP;
 		HAL_GPIO_Init(BT_CONFIG_GPIO_Port, &GPIO_InitStruct);
 
@@ -890,26 +907,39 @@ int main(void) {
 	void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 
 		// Check if the interrupt was triggered by Timer 6 (used for long-press detection)
-		if (htim->Instance == TIM6) {
+		    if (htim->Instance == TIM6) {
 
-			// Stop the timer so it acts as a one-shot event rather than continuously firing
-			HAL_TIM_Base_Stop_IT(&htim6);
+		        // Stop the timer so it acts as a one-shot event rather than continuously firing
+		        HAL_TIM_Base_Stop_IT(&htim6);
 
-			// Circularly advance the multiplier index.
-			// Keeps the value bounded between 0 and 7 (assuming an array of 8 increment sizes).
-			index_inc = (index_inc + 1) % 8;
+		        // Check if BT_CONFIG is still pressed (Active Low)
+		        if (!(BT_CONFIG_GPIO_Port->IDR & BT_CONFIG_Pin)) {
 
-			// Flag the main loop to refresh the display, updating the UI with the new multiplier
-			lcd_needs_update = true;
+		            // Long-press detected on CONFIG button: Reset state to Start
+		            state = Start;
+		            lcd_needs_update = true;
 
-			// --- Reset the EXTI Line 4 (Button) Edge Triggers ---
-			// By doing this here, the long-press forces the button state machine back
-			// to its default state (waiting for a new press), effectively ignoring the physical release.
+		            // Reset EXTI triggers for BT_CONFIG pin
+		            // Supondo que BT_CONFIG_Pin esteja alocado em uma linha EXTI (ex: Line X)
+		            // Ajuste os registradores FTSR1/RTSR1 de acordo com o pino/linha do BT_CONFIG
+		            EXTI->RTSR1 &= ~EXTI_RTSR1_RT0;
+					EXTI->FTSR1 |= EXTI_FTSR1_FT0;
+		        }
+		        // Otherwise, handle BT_DEC long-press
+		        else if (!(BT_DEC_GPIO_Port->IDR & GPIO_IDR_ID4)) {
 
-			EXTI->RTSR1 &= ~EXTI_FTSR1_FT4; // Disable rising edge detection on Line 4 (abort release detection)
-			EXTI->FTSR1 |= EXTI_RTSR1_RT4; // Enable falling edge detection on Line 4 (ready for next press)
+		            // Circularly advance the multiplier index.
+		            index_inc = (index_inc + 1) % 8;
+
+		            // Flag the main loop to refresh the display, updating the UI with the new multiplier
+		            lcd_needs_update = true;
+
+		            // --- Reset the EXTI Line 4 (Button Dec) Edge Triggers ---
+		            EXTI->RTSR1 &= ~EXTI_FTSR1_FT4; // Disable rising edge detection on Line 4
+		            EXTI->FTSR1 |= EXTI_RTSR1_RT4; // Enable falling edge detection on Line 4
+		        }
+		    }
 		}
-	}
 
 	/**
 	 * @brief GPIO Interrupt Function. Handles button presses for Config, Decrement, and Set.
@@ -918,78 +948,95 @@ int main(void) {
 	 */
 	void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 		/* ----------------------------------------------------------------------
-		 * CONFIGURATION BUTTON HANDLING
-		 * ---------------------------------------------------------------------- */
-		if (GPIO_Pin == BT_CONFIG_Pin) {
-			static uint32_t ultimo_aperto_conf = 0;
+		     * CONFIGURATION BUTTON HANDLING (COM LONG-PRESS)
+		     * ---------------------------------------------------------------------- */
+		    if (GPIO_Pin == BT_CONFIG_Pin) {
+		        if (state == Running)
+		            return;
 
-			// Software debounce: ensure at least 200ms have passed since the last valid press
-			if (HAL_GetTick() - ultimo_aperto_conf > 200) {
-				ultimo_aperto_conf = HAL_GetTick(); // Update the debounce timestamp
+		        static uint32_t ultimo_aperto_conf = 0;
 
-				// Ignore configuration inputs if the system is currently executing (Running state)
-				if (state == Running)
-					return;
+		        // Software debounce: threshold de 50ms (alinhado com BT_DEC)
+		        if (HAL_GetTick() - ultimo_aperto_conf > 100) {
+		            ultimo_aperto_conf = HAL_GetTick(); // Update debounce timestamp
 
-				// Flag to trigger the main loop to refresh the display
-				lcd_needs_update = true;
+		            lcd_needs_update = true;
 
-				// State machine transition: cycle through the configuration menus
-				if (state == Config_Off_Cycles) {
-					state = Start; // Wrap around to the initial state if at the end of the menu
-					return;
-				}
-				state += 1; // Advance to the next configuration state
-			}
+		            // Direct register read: Check if BT_CONFIG is LOW (Pressed - Active Low)
+		            if (!(BT_CONFIG_GPIO_Port->IDR & GPIO_IDR_ID0)) {
 
-			/* ----------------------------------------------------------------------
-			 * DECREMENT / MULTIPLIER BUTTON HANDLING
-			 * ---------------------------------------------------------------------- */
-		} else if (GPIO_Pin == BT_DEC_Pin) {
-			if (state == Running)
-							return;
-			static uint32_t last_press_dec = 0;
+		                // Button was PRESSED
+		                // Switch EXTI triggers to catch release (Rising Edge)
+		            	// Button was PRESSED
+						EXTI->FTSR1 &= ~EXTI_FTSR1_FT0;
+						EXTI->RTSR1 |= EXTI_RTSR1_RT0;
 
-			// Software debounce: 50ms threshold for the decrement button
-			if (HAL_GetTick() - last_press_dec > 50) {
-				last_press_dec = HAL_GetTick(); // Update the debounce timestamp
+		                // Start TIM6 for long-press detection
+		                __HAL_TIM_SET_COUNTER(&htim6, 0);
+		                HAL_TIM_Base_Start_IT(&htim6);
 
-				lcd_needs_update = true;
+		            } else {
 
-				// Direct register read: Check if Pin 4 on the port is LOW (Button Pressed - Active Low)
-				if (!(BT_DEC_GPIO_Port->IDR & GPIO_IDR_ID4)) {
+		                // Button was RELEASED
+		                HAL_TIM_Base_Stop_IT(&htim6); // Stop timer
 
-					// Button was PRESSED
-					// Dynamically reconfigure EXTI triggers to catch the release (Rising Edge)
-					EXTI->FTSR1 &= ~EXTI_FTSR1_FT4; // Disable falling edge detection on Line 4
-					EXTI->RTSR1 |= EXTI_RTSR1_RT4; // Enable rising edge detection on Line 4
 
-					// Reset and start Timer 6 (Likely used for long-press detection or dynamic increment speed)
-					__HAL_TIM_SET_COUNTER(&htim6, 0);
-					HAL_TIM_Base_Start_IT(&htim6);
-				} else {
+						 EXTI->RTSR1 &= ~EXTI_RTSR1_RT0;
+						EXTI->FTSR1 |= EXTI_FTSR1_FT0;
 
-					// Button was RELEASED
-					HAL_TIM_Base_Stop_IT(&htim6); // Stop the long-press timer
+		                // Short Press Action: Advance state machine
+		                if (state == Config_Off_Cycles) {
+		                    state = Start; // Wrap around to initial state
+		                } else {
+		                    state += 1; // Advance to next configuration state
+		                }
+		            }
+		        }
 
-					// Restore EXTI triggers to catch the next press (Falling Edge)
-					EXTI->RTSR1 &= ~EXTI_FTSR1_FT4; // Disable rising edge detection on Line 4
-					EXTI->FTSR1 |= EXTI_RTSR1_RT4; // Enable falling edge detection on Line 4
+		    /* ----------------------------------------------------------------------
+		     * DECREMENT / MULTIPLIER BUTTON HANDLING
+		     * ---------------------------------------------------------------------- */
+		    } else if (GPIO_Pin == BT_DEC_Pin) {
+		        if (state == Running)
+		            return;
 
-					// --- APPLY MULTIPLIER LOGIC ---
-					// Add the selected increment value to the corresponding parameter based on the current state
-					if (state == Config_Cycles) {
-						parametros.Target_Counts += increment[index_inc];
-					} else if (state == Config_Rising) {
-						parametros.Rise_time += increment[index_inc];
-					} else if (state == Config_Falling) {
-						parametros.Fall_time += increment[index_inc];
-					} else if (state == Config_Off_Cycles) {
-						parametros.Offset_Counts += increment[index_inc];
-					}
-				}
-			}
+		        static uint32_t last_press_dec = 0;
 
+		        // Software debounce: 50ms threshold
+		        if (HAL_GetTick() - last_press_dec > 50) {
+		            last_press_dec = HAL_GetTick();
+
+		            lcd_needs_update = true;
+
+		            if (!(BT_DEC_GPIO_Port->IDR & GPIO_IDR_ID4)) {
+
+		                // Button was PRESSED
+		                EXTI->FTSR1 &= ~EXTI_FTSR1_FT4;
+		                EXTI->RTSR1 |= EXTI_RTSR1_RT4;
+
+		                __HAL_TIM_SET_COUNTER(&htim6, 0);
+		                HAL_TIM_Base_Start_IT(&htim6);
+
+		            } else {
+
+		                // Button was RELEASED
+		                HAL_TIM_Base_Stop_IT(&htim6);
+
+		                EXTI->RTSR1 &= ~EXTI_RTSR1_RT4;
+		                EXTI->FTSR1 |= EXTI_FTSR1_FT4;
+
+		                // --- APPLY MULTIPLIER LOGIC ---
+		                if (state == Config_Cycles) {
+		                    parametros.Target_Counts += increment[index_inc];
+		                } else if (state == Config_Rising) {
+		                    parametros.Rise_time += increment[index_inc];
+		                } else if (state == Config_Falling) {
+		                    parametros.Fall_time += increment[index_inc];
+		                } else if (state == Config_Off_Cycles) {
+		                    parametros.Offset_Counts += increment[index_inc];
+		                }
+		            }
+		        }
 			/* ----------------------------------------------------------------------
 			 * SET / START-STOP BUTTON HANDLING
 			 * ---------------------------------------------------------------------- */
@@ -1004,7 +1051,7 @@ int main(void) {
 				if (state == Start) {
 					state = Initializing;
 				} else if (state == Running) {
-					state = Start;
+					state = Stopping;
 				}
 
 				// Flag the LCD to update its UI with the new execution state

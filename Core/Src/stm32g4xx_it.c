@@ -47,8 +47,7 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 volatile uint8_t emergency_stop = 0;
-float rpm_rampa = 0.0f; // Setpoint dinâmico (a rampa) que o PID vai perseguir
-static int32_t pos_antiga = 0;
+
 
 // --- Buffer circular para a média móvel de velocidade ---
 static int32_t delta_buffer[WINDOW_SAMPLES] = {0};
@@ -81,7 +80,10 @@ extern volatile PIDController PID; // Parametros do PID
 extern volatile float rpm_alvo; // ALVO
 extern volatile float rpm_filtrado_pid;
 extern volatile User_inputs parametros; // Param
-
+extern volatile uint32_t  voltas_tim;
+extern  int32_t pos_antiga;
+extern float rpm_rampa ; // Setpoint dinâmico (a rampa) que o PID vai perseguir
+extern volatile uint8_t fall_end;
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -294,7 +296,7 @@ void TIM3_IRQHandler(void) {
 
 		// Acknowledge the interrupt by clearing the UIF flag
 		TIM3->SR &= ~TIM_SR_UIF;
-
+		voltas_tim = TIM2->CNT;
 		// Update raw encoder hardware readings
 		update_encoder(&Encoder, &htim2);
 		voltas_totais = Encoder.position / COUNTS_PER_REV;
@@ -316,7 +318,7 @@ void TIM3_IRQHandler(void) {
 		// RPM médio sobre a janela inteira (25 amostras = 50 ms)
 		rpm_filtrado_pid = (soma_delta_pulsos / (float) COUNTS_PER_REV)
 		                  * (60.0f / (WINDOW_SAMPLES * CONTROL_PERIOD_S));
-
+		if(rpm_filtrado_pid < 0) rpm_filtrado_pid =0;
 //		// Calculate raw instantaneous RPM.
 //		// Note: At low speeds, without high-resolution time-stamping, this calculation
 //		// suffers from quantization error (causing jagged "jumps" in the reading).
@@ -365,15 +367,18 @@ void TIM3_IRQHandler(void) {
 				rpm_rampa -= passo_descida;
 
 				// Clamp the ramped value to not undershoot the target
-				if (rpm_rampa < alvo_atual)
+				if (rpm_rampa < alvo_atual){
 					rpm_rampa = alvo_atual;
+					fall_end =1;
+				}
 			} else {
 				rpm_rampa = alvo_atual; // Step response (No ramp)
+				fall_end =1;
 			}
 		}
 
 		// The PID controller runs continuously, tracking the dynamically generated ramp trajectory
-		pwm = (uint32_t)PIDController_Update(&PID, rpm_rampa, rpm_filtrado_pid);
+		pwm = (uint32_t)PIDController_Update(&PID,rpm_rampa , rpm_filtrado_pid);
 
 		// Apply the calculated PID control effort to the Timer 1 Capture/Compare Register (Duty Cycle)
 		TIM1->CCR1 = pwm;

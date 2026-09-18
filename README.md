@@ -30,10 +30,7 @@ subgraph group_ui["User Interface"]
   node_lcd["LCD Driver<br/>[LCD1602.c]"]
 end
 
-subgraph group_storage["Settings Storage"]
-  node_settings[("Settings Records<br/>[main.c]")]
-  node_flash["Flash HAL"]
-end
+
 
 subgraph group_platform["MCU Platform"]
   node_hal["HAL Runtime<br/>[stm32g4xx_hal.c]"]
@@ -50,8 +47,6 @@ node_encoderhw(("Encoder Sensor"))
 node_user -->|"presses"| node_buttons
 node_buttons -->|"triggers"| node_interrupts
 node_interrupts -->|"dispatches"| node_main
-node_main -->|"loads settings"| node_settings
-node_settings -->|"reads/writes"| node_flash
 node_main -->|"reads counts"| node_encoder
 node_encoderhw -->|"provides pulses"| node_encoder
 node_main -->|"computes control"| node_pid
@@ -70,8 +65,6 @@ click node_pid "https://github.com/mateus-david/motorcontrolstm/blob/main/Core/S
 click node_encoder "https://github.com/mateus-david/motorcontrolstm/blob/main/Core/Src/motor_encoder.c"
 click node_pwm "https://github.com/mateus-david/motorcontrolstm/blob/main/Core/Src/main.c"
 click node_lcd "https://github.com/mateus-david/motorcontrolstm/blob/main/Core/Src/LCD1602.c"
-click node_settings "https://github.com/mateus-david/motorcontrolstm/blob/main/Core/Src/main.c"
-click node_flash "https://github.com/mateus-david/motorcontrolstm/blob/main/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash.c"
 click node_hal "https://github.com/mateus-david/motorcontrolstm/blob/main/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c"
 click node_timhal "https://github.com/mateus-david/motorcontrolstm/blob/main/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_tim.c"
 click node_gpiohal "https://github.com/mateus-david/motorcontrolstm/blob/main/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_gpio.c"
@@ -86,7 +79,6 @@ classDef toneTeal fill:#ccfbf1,stroke:#0f766e,stroke-width:1.5px,color:#134e4a
 class node_main,node_interrupts toneBlue
 class node_pid,node_encoder,node_pwm toneAmber
 class node_lcd toneMint
-class node_settings,node_flash toneRose
 class node_hal,node_timhal,node_gpiohal,node_user,node_buttons,node_motor,node_lcdhw,node_encoderhw toneIndigo
 ```
 

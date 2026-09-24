@@ -74,6 +74,8 @@ TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim6;
 
+
+//Não utilizado
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
@@ -1041,6 +1043,8 @@ int main(void) {
 			 * SET / START-STOP BUTTON HANDLING
 			 * ---------------------------------------------------------------------- */
 		} else if (GPIO_Pin == BT_SET_Pin) {
+			if(state ==Running) return;
+
 			static uint32_t last_press_set = 0;
 
 			// Software debounce: 50ms threshold for the SET button
@@ -1050,23 +1054,35 @@ int main(void) {
 				// Toggle system state between Start (Idle/Ready) and Running (Active)
 				if (state == Start) {
 					state = Initializing;
-				} else if (state == Running) {
-					state = Stopping;
 				}
 
 				// Flag the LCD to update its UI with the new execution state
 				lcd_needs_update = true;
 			}
-		}
+
+
+			/* ----------------------------------------------------------------------
+			 * STOP BUTTON HANDLING
+			 * ---------------------------------------------------------------------- */
+		}else if(GPIO_Pin == BT_STOP_Pin ){
+			if(state != Running) return;
+			static uint32_t last_press_stop = 0;
+
+			if (HAL_GetTick() - last_press_stop > 50) {
+				last_press_stop = HAL_GetTick(); // Update the debounce timestamp
+				emergency_stop = 1;
+
+			}
+
+	}
 	}
 
 
-
-	void SendChar(char c) {
-		while (!(USART3->ISR & USART_ISR_TXE_TXFNF)) {
-		}
-		USART3->TDR = c;
-	}
+//	void SendChar(char c) {
+//		while (!(USART3->ISR & USART_ISR_TXE_TXFNF)) {
+//		}
+//		USART3->TDR = c;
+//	}
 	/* USER CODE END 4 */
 
 	/* USER CODE BEGIN Header */

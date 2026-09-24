@@ -105,6 +105,8 @@ void Error_Handler(void);
 #define RW_GPIO_Port GPIOB
 #define RS_Pin GPIO_PIN_7
 #define RS_GPIO_Port GPIOB
+#define BT_STOP_Pin GPIO_PIN_9
+#define BT_STOP_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 

@@ -36,16 +36,20 @@ extern "C" {
 /* USER CODE BEGIN Includes */
 #include "motor_encoder.h"
 #include "LCD1602.h"
+#include "StateMachine.h"
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
 typedef struct {
-	float Target_Counts;
 	float RPM;
+	float Target_Counts;
 	float Rise_time;
 	float Fall_time;
 	float Offset_Counts;
+	float leitura;
+	float modo;
+	uint8_t concluida;
 } User_inputs;
 
 /* USER CODE END ET */

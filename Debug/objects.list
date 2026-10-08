@@ -1,5 +1,6 @@
 "./Core/Src/LCD1602.o"
 "./Core/Src/PID.o"
+"./Core/Src/StateMachine.o"
 "./Core/Src/main.o"
 "./Core/Src/motor_encoder.o"
 "./Core/Src/stm32g4xx_hal_msp.o"

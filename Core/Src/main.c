@@ -84,6 +84,14 @@ volatile float voltas_totais = 0;
 float media_rpm = 0;
 volatile uint32_t pwm;
 
+//Máquina de estados
+volatile TelaConfig_t tela_conf_global = TELA_INICIAR;
+volatile EstadoAtiv_t estado_ativ_global = ATIV_INIT;
+
+//Estado de subida ou descida
+volatile uint8_t rise_ramp =0;
+
+
 //debug
 volatile uint32_t  voltas_tim ;
 // PID
@@ -127,6 +135,45 @@ static void MX_TIM6_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+
+#define FILA_TAM 8u                       /* potência de 2 */
+static volatile Input_t fila[FILA_TAM];
+static volatile uint8_t fila_ini = 0u;    /* só o laço principal escreve */
+static volatile uint8_t fila_fim = 0u;    /* só a ISR escreve            */
+ volatile Input_t input_prioritario = INPUT_NENHUM; //Input parada de contagem
+
+/* chamar na ISR, no lugar de Maquina_executar(INPUT_x) */
+bool input_empilhar(Input_t in)
+{
+    uint8_t prox = (uint8_t)((fila_fim + 1u) & (FILA_TAM - 1u));
+    if (prox == fila_ini) {
+        return false;                     /* cheia: descarta */
+    }
+    fila[fila_fim] = in;
+    fila_fim = prox;
+    return true;
+}
+
+/* substitui a input_consumir() anterior */
+static Input_t input_consumir(void)
+{
+	if (input_prioritario != INPUT_NENHUM) {
+	        uint32_t primask = __get_PRIMASK();
+	        __disable_irq();
+	        Input_t in = input_prioritario;     /* lê e limpa de forma atômica */
+	        input_prioritario = INPUT_NENHUM;
+	        __set_PRIMASK(primask);
+	        return in;
+	    }
+    if (fila_ini == fila_fim) {
+        return INPUT_NENHUM;
+    }
+    Input_t in = fila[fila_ini];
+    fila_ini = (uint8_t)((fila_ini + 1u) & (FILA_TAM - 1u));
+    return in;
+}
+
 
 
 /* USER CODE END 0 */
@@ -191,6 +238,8 @@ int main(void) {
 	parametros.RPM = 20;
 	parametros.Rise_time = 2000;
 	parametros.Target_Counts = 1;
+	parametros.leitura = 1;
+	parametros.concluida = 0;
 
 	// 1. Configuração dos Ganhos do Controlador (Estes valores precisarão ser ajustados na prática)
 	PID.Kp = 12.6f;
@@ -207,12 +256,12 @@ int main(void) {
 	// 4. Limites da Saída do Controlador (Sinal de Controle -> PWM)
 	// Conforme configuramos, o TIM1 CH1 vai de 0 (parado) a 4800 (velocidade máxima).
 	PID.limMin = 0.0f;
-	PID.limMax = 100.0f;
+	PID.limMax = 600.0f;
 
 	// 5. Limites do Integrador (Anti-Windup)
 	// Impede que o erro integral cresça infinitamente caso o motor trave.
 	PID.limMinInt = 0.0f;
-	PID.limMaxInt = 80.0f;
+	PID.limMaxInt = 480.0f;
 
 	/* USER CODE END 2 */
 
@@ -232,7 +281,8 @@ int main(void) {
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
 	TIM1->CCR1 = 0;
-
+	Fase_t fase_atual;
+	fase_atual = Maquina_executar(INPUT_NENHUM);
 	/* USER CODE BEGIN WHILE */
 
 	while (1) {
@@ -261,225 +311,201 @@ int main(void) {
 		if (indice >= NUM_LEITURAS) {
 			indice = 0; // Wrap around to the beginning of the array
 		}
-
-
+		if(fase_atual == FASE_ATIVACAO){
+			sprintf(buffer, "RPM:%.1f|%.1f", media_rpm, parametros.RPM);
+						lcd_put_cur(1, 0);
+						lcd_send_string(buffer);
+		}
+		Input_t input = input_consumir();
+		if(input != INPUT_NENHUM) fase_atual =Maquina_executar(input);
 
 		/* ----------------------------------------------------------------------
 		 * SYSTEM STATE MACHINE & UI HANDLER
 		 * ---------------------------------------------------------------------- */
-		switch (state) {
 
-		case Start: {
-			static uint32_t ultimo_tempo_lcd = 0;
-			static uint8_t tela_atual = 0;
-
-			// Non-blocking delay: Update the LCD carousel every 1.5 seconds (1500 ms)
-			if (HAL_GetTick() - ultimo_tempo_lcd > 1500) {
-				ultimo_tempo_lcd = HAL_GetTick(); // Update timestamp
-
-				lcd_put_cur(0, 0);
-				lcd_send_string("Aperte SET:     "); // Prompt user. Trailing spaces clear previous display artifacts
-
-				lcd_put_cur(1, 0);
-
-				// Carousel logic: Cycle through system parameters to display on the second line
-				switch (tela_atual) {
-				case 0:
-					sprintf(buffer, "Target: %d      ",
-							(int)parametros.Target_Counts);
-					break;
-				case 1:
-					sprintf(buffer, "RPM: %d         ", (int) parametros.RPM);
-					break;
-				case 2:
-					sprintf(buffer, "Rise: %d        ",(int) parametros.Rise_time);
-					break;
-				case 3:
-					sprintf(buffer, "Fall: %d        ",(int) parametros.Fall_time);
-					break;
-				case 4:
-					sprintf(buffer, "Offset: %d      ",
-							(int)parametros.Offset_Counts);
-					break;
-				}
-				lcd_send_string(buffer);
-
-				// Advance the carousel screen index, wrapping around after screen 4
-				tela_atual++;
-				if (tela_atual > 4)
-					tela_atual = 0;
-			}
-			break;
-		}
-
-		case Config_Cycles: {
-			// Event-driven update: Only redraw the LCD if a button interrupt flagged a change
-			if (lcd_needs_update) {
-				lcd_put_cur(0, 0);
-				char sin = (increment[index_inc] > 0 ? '+' : '-');
-
-				// First line: Parameter name, sign, and current increment magnitude
-				snprintf(buffer, sizeof(buffer), "Target:%c%-6d", sin,
-						abs(increment[index_inc]));
-				lcd_send_string(buffer);
-
-				// Second line: Current parameter value
-				sprintf(buffer, "%d counts      ", (int)parametros.Target_Counts);
-				lcd_put_cur(1, 0);
-				lcd_send_string(buffer);
-
-				lcd_needs_update = false; // Clear flag to prevent redundant I2C/SPI transmissions
-			}
-			break;
-		}
-
-		case Config_Rising: {
-			if (lcd_needs_update) {
-				lcd_put_cur(0, 0);
-				char sin = (increment[index_inc] > 0 ? '+' : '-');
-				snprintf(buffer, sizeof(buffer), "Rising:%c%-6d", sin,
-						abs(increment[index_inc]));
-				lcd_send_string(buffer);
-
-				sprintf(buffer, "%d ms          ", (int)parametros.Rise_time);
-				lcd_put_cur(1, 0);
-				lcd_send_string(buffer);
-
-				lcd_needs_update = false;
-			}
-			break;
-		}
-
-		case Config_Falling: {
-			if (lcd_needs_update) {
-				lcd_put_cur(0, 0);
-				char sin = (increment[index_inc] > 0 ? '+' : '-');
-				snprintf(buffer, sizeof(buffer), "Falling:%c%-6d", sin,
-						abs(increment[index_inc]));
-				lcd_send_string(buffer);
-
-				sprintf(buffer, "%d ms          ",(int) parametros.Fall_time);
-				lcd_put_cur(1, 0);
-				lcd_send_string(buffer);
-
-				lcd_needs_update = false;
-			}
-			break;
-		}
-
-		case Config_Off_Cycles: {
-			if (lcd_needs_update) {
-				lcd_put_cur(0, 0);
-				char sin = (increment[index_inc] > 0 ? '+' : '-');
-				snprintf(buffer, sizeof(buffer), "Offset:%c%-6d", sin,
-						abs(increment[index_inc]));
-				lcd_send_string(buffer);
-
-				sprintf(buffer, "%d counts      ", (int)parametros.Offset_Counts);
-				lcd_put_cur(1, 0);
-				lcd_send_string(buffer);
-
-				lcd_needs_update = false;
-			}
-			break;
-		}
-
-		case Running: {
-
-//			if (emergency_stop) {
-//				state = Stopping;
+//		if(0){
+//		switch (state) {
+//
+//		case Start: { //SELEÇÃO DE MODOS
+//			// Non-blocking delay: Update the LCD carousel every 1.5 seconds (1500 ms)
+//
+//				lcd_put_cur(0, 0);
+//				lcd_send_string("Selecione o modo:     "); // Prompt user. Trailing spaces clear previous display artifacts
+//
+//				break;
+//
+//		}
+//
+//		case Config_Cycles: {
+//			// Event-driven update: Only redraw the LCD if a button interrupt flagged a change
+//			if (lcd_needs_update) {
+//				lcd_put_cur(0, 0);
+//				char sin = (increment[index_inc] > 0 ? '+' : '-');
+//
+//				// First line: Parameter name, sign, and current increment magnitude
+//				snprintf(buffer, sizeof(buffer), "Target:%c%-6d", sin,
+//						abs(increment[index_inc]));
+//				lcd_send_string(buffer);
+//
+//				// Second line: Current parameter value
+//				sprintf(buffer, "%d counts      ", (int)parametros.Target_Counts);
+//				lcd_put_cur(1, 0);
+//				lcd_send_string(buffer);
+//
+//				lcd_needs_update = false; // Clear flag to prevent redundant I2C/SPI transmissions
 //			}
-			static uint32_t ultimo_tempo_animacao = 0;
-			static uint8_t frame_animacao = 0;
-			char *pontos;
-
-			// Verifica se já se passaram 250 milissegundos desde a última atualização
-			if (HAL_GetTick() - ultimo_tempo_animacao >= 400) {
-			    ultimo_tempo_animacao = HAL_GetTick(); // Reinicia o cronômetro
-
-			// Define a posição da "bolinha" pulando
-			switch(frame_animacao) {
-			    case 0: pontos = "o.."; break; // Posição 1
-			    case 1: pontos = ".o."; break; // Posição 2
-			    case 2: pontos = "..o"; break; // Posição 3
-			    case 3: pontos = ".o."; break; // Volta para a Posição 2
-			}
-			// Active execution state. Continuously overwrites display with live data
-			lcd_put_cur(0, 0);
-			sprintf(buffer, "On%s  |Cnt: %d ",pontos, (int)voltas_totais);
-			lcd_send_string(buffer); // "Running..."
-
-			// Avança para o próximo quadro (0, 1, 2, 3 e depois volta para 0)
-			frame_animacao = (frame_animacao + 1) % 4;
-
-			// Display live filtered RPM calculated at the top of the loop
-			sprintf(buffer, "RPM: %d |Set:%d", (int) media_rpm, (int)parametros.Target_Counts);
-			lcd_put_cur(1, 0);
-			lcd_send_string(buffer);
-			}
-			// Ensure flag is cleared if we just transitioned from a config state
-			lcd_needs_update = false;
-
-
-		if(fall_end){
-			state=Stopping;
-		}
-			break;
-		}
-		case Initializing: {
-
-
-			PIDController_Init(&PID);
-
-
-			/* --- Peripheral Initialization Phase --- */
-
-
-
-			// Start Timer 2 Output Compare in interrupt mode (Often used to trigger precise velocity measurements)
-			TIM2->CCR3 = (parametros.Target_Counts + parametros.Offset_Counts)*4000;
-			TIM2->CNT = 0;
-			pos_antiga = 0;
-			rpm_rampa = 0;
-			fall_end = 0;
-			HAL_TIM_OC_Start_IT(&htim2, TIM_CHANNEL_3);
-			// Start Timer 2 in Encoder interface mode to track quadrature encoder pulses
-			HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
-			HAL_Delay(10);
-			update_encoder(&Encoder, &htim2);
-
-			// Start Timer 3 in interrupt mode (Likely used for the main control loop / PID execution time base)
-			HAL_TIM_Base_Start_IT(&htim3);
-
-			// Initialize Motor PWM duty cycle (Capture/Compare Register 1) to 0% (stopped)
-			TIM1->CCR1 = 0;
-
-			// Start PWM signal generation on Timer 1 Channel 1
-			HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-
-			state = Running;
-
-			break;
-		}
-		case Stopping: {
-			TIM1->CCR1 = 0;
-			HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
-
-			HAL_TIM_OC_Stop_IT(&htim2, TIM_CHANNEL_3);
-
-			HAL_TIM_OC_Stop_IT(&htim2, TIM_CHANNEL_3);
-			HAL_TIM_Encoder_Stop(&htim2, TIM_CHANNEL_ALL);
-
-			state = Start;
-			emergency_stop = 0;
-			break;
-		}
-
-		default:
-			break;
-		}
-
-	}
+//			break;
+//		}
+//
+//		case Config_Rising: {
+//			if (lcd_needs_update) {
+//				lcd_put_cur(0, 0);
+//				char sin = (increment[index_inc] > 0 ? '+' : '-');
+//				snprintf(buffer, sizeof(buffer), "Rising:%c%-6d", sin,
+//						abs(increment[index_inc]));
+//				lcd_send_string(buffer);
+//
+//				sprintf(buffer, "%d ms          ", (int)parametros.Rise_time);
+//				lcd_put_cur(1, 0);
+//				lcd_send_string(buffer);
+//
+//				lcd_needs_update = false;
+//			}
+//			break;
+//		}
+//
+//		case Config_Falling: {
+//			if (lcd_needs_update) {
+//				lcd_put_cur(0, 0);
+//				char sin = (increment[index_inc] > 0 ? '+' : '-');
+//				snprintf(buffer, sizeof(buffer), "Falling:%c%-6d", sin,
+//						abs(increment[index_inc]));
+//				lcd_send_string(buffer);
+//
+//				sprintf(buffer, "%d ms          ",(int) parametros.Fall_time);
+//				lcd_put_cur(1, 0);
+//				lcd_send_string(buffer);
+//
+//				lcd_needs_update = false;
+//			}
+//			break;
+//		}
+//
+//		case Config_Off_Cycles: {
+//			if (lcd_needs_update) {
+//				lcd_put_cur(0, 0);
+//				char sin = (increment[index_inc] > 0 ? '+' : '-');
+//				snprintf(buffer, sizeof(buffer), "Offset:%c%-6d", sin,
+//						abs(increment[index_inc]));
+//				lcd_send_string(buffer);
+//
+//				sprintf(buffer, "%d counts      ", (int)parametros.Offset_Counts);
+//				lcd_put_cur(1, 0);
+//				lcd_send_string(buffer);
+//
+//				lcd_needs_update = false;
+//			}
+//			break;
+//		}
+//
+//		case Running: {
+//
+////			if (emergency_stop) {
+////				state = Stopping;
+////			}
+//			static uint32_t ultimo_tempo_animacao = 0;
+//			static uint8_t frame_animacao = 0;
+//			char *pontos;
+//
+//			// Verifica se já se passaram 250 milissegundos desde a última atualização
+//			if (HAL_GetTick() - ultimo_tempo_animacao >= 400) {
+//			    ultimo_tempo_animacao = HAL_GetTick(); // Reinicia o cronômetro
+//
+//			// Define a posição da "bolinha" pulando
+//			switch(frame_animacao) {
+//			    case 0: pontos = "o.."; break; // Posição 1
+//			    case 1: pontos = ".o."; break; // Posição 2
+//			    case 2: pontos = "..o"; break; // Posição 3
+//			    case 3: pontos = ".o."; break; // Volta para a Posição 2
+//			}
+//			// Active execution state. Continuously overwrites display with live data
+//			lcd_put_cur(0, 0);
+//			sprintf(buffer, "On%s  |Cnt: %d ",pontos, (int)voltas_totais);
+//			lcd_send_string(buffer); // "Running..."
+//
+//			// Avança para o próximo quadro (0, 1, 2, 3 e depois volta para 0)
+//			frame_animacao = (frame_animacao + 1) % 4;
+//
+//			// Display live filtered RPM calculated at the top of the loop
+//			sprintf(buffer, "RPM: %d |Set:%d", (int) media_rpm, (int)parametros.Target_Counts);
+//			lcd_put_cur(1, 0);
+//			lcd_send_string(buffer);
+//			}
+//			// Ensure flag is cleared if we just transitioned from a config state
+//			lcd_needs_update = false;
+//
+//
+//		if(fall_end){
+//			state=Stopping;
+//		}
+//			break;
+//		}
+//		case Initializing: {
+//
+//
+//			PIDController_Init(&PID);
+//
+//
+//			/* --- Peripheral Initialization Phase --- */
+//
+//
+//
+//			// Start Timer 2 Output Compare in interrupt mode (Often used to trigger precise velocity measurements)
+//			TIM2->CCR3 = (parametros.Target_Counts + parametros.Offset_Counts)*4000;
+//			TIM2->CNT = 0;
+//			pos_antiga = 0;
+//			rpm_rampa = 0;
+//			fall_end = 0;
+//			HAL_TIM_OC_Start_IT(&htim2, TIM_CHANNEL_3);
+//			// Start Timer 2 in Encoder interface mode to track quadrature encoder pulses
+//			HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
+//			HAL_Delay(10);
+//			update_encoder(&Encoder, &htim2);
+//
+//			// Start Timer 3 in interrupt mode (Likely used for the main control loop / PID execution time base)
+//			HAL_TIM_Base_Start_IT(&htim3);
+//
+//			// Initialize Motor PWM duty cycle (Capture/Compare Register 1) to 0% (stopped)
+//			TIM1->CCR1 = 0;
+//
+//			// Start PWM signal generation on Timer 1 Channel 1
+//			HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+//
+//			state = Running;
+//
+//			break;
+//		}
+//		case Stopping: {
+//			TIM1->CCR1 = 0;
+//			HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+//
+//			HAL_TIM_OC_Stop_IT(&htim2, TIM_CHANNEL_3);
+//
+//			HAL_TIM_OC_Stop_IT(&htim2, TIM_CHANNEL_3);
+//			HAL_TIM_Encoder_Stop(&htim2, TIM_CHANNEL_ALL);
+//
+//			state = Start;
+//			emergency_stop = 0;
+//			break;
+//		}
+//
+//		default:
+//			break;
+//		}
+//
+//	}
+//}
+}
 }
 	/* USER CODE END 3 */
 
@@ -547,9 +573,9 @@ int main(void) {
 
 		/* USER CODE END TIM1_Init 1 */
 		htim1.Instance = TIM1;
-		htim1.Init.Prescaler = 4799;
+		htim1.Init.Prescaler = 7;
 		htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-		htim1.Init.Period = 99;
+		htim1.Init.Period = 599;
 		htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
 		htim1.Init.RepetitionCounter = 0;
 		htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -876,6 +902,12 @@ int main(void) {
 		GPIO_InitStruct.Pull = GPIO_PULLUP;
 		HAL_GPIO_Init(BT_DEC_GPIO_Port, &GPIO_InitStruct);
 
+		/*Configure GPIO pin : BT_STOP_Pin */
+		GPIO_InitStruct.Pin = BT_STOP_Pin;
+		GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+		GPIO_InitStruct.Pull = GPIO_PULLUP;
+		HAL_GPIO_Init(BT_STOP_Port, &GPIO_InitStruct);
+
 		/*Configure GPIO pins : EN_Pin RW_Pin RS_Pin */
 		GPIO_InitStruct.Pin = EN_Pin | RW_Pin | RS_Pin;
 		GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -892,6 +924,8 @@ int main(void) {
 
 		HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
 		HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+
+
 
 		/* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -953,8 +987,6 @@ int main(void) {
 		     * CONFIGURATION BUTTON HANDLING (COM LONG-PRESS)
 		     * ---------------------------------------------------------------------- */
 		    if (GPIO_Pin == BT_CONFIG_Pin) {
-		        if (state == Running)
-		            return;
 
 		        static uint32_t ultimo_aperto_conf = 0;
 
@@ -962,37 +994,7 @@ int main(void) {
 		        if (HAL_GetTick() - ultimo_aperto_conf > 100) {
 		            ultimo_aperto_conf = HAL_GetTick(); // Update debounce timestamp
 
-		            lcd_needs_update = true;
-
-		            // Direct register read: Check if BT_CONFIG is LOW (Pressed - Active Low)
-		            if (!(BT_CONFIG_GPIO_Port->IDR & GPIO_IDR_ID0)) {
-
-		                // Button was PRESSED
-		                // Switch EXTI triggers to catch release (Rising Edge)
-		            	// Button was PRESSED
-						EXTI->FTSR1 &= ~EXTI_FTSR1_FT0;
-						EXTI->RTSR1 |= EXTI_RTSR1_RT0;
-
-		                // Start TIM6 for long-press detection
-		                __HAL_TIM_SET_COUNTER(&htim6, 0);
-		                HAL_TIM_Base_Start_IT(&htim6);
-
-		            } else {
-
-		                // Button was RELEASED
-		                HAL_TIM_Base_Stop_IT(&htim6); // Stop timer
-
-
-						 EXTI->RTSR1 &= ~EXTI_RTSR1_RT0;
-						EXTI->FTSR1 |= EXTI_FTSR1_FT0;
-
-		                // Short Press Action: Advance state machine
-		                if (state == Config_Off_Cycles) {
-		                    state = Start; // Wrap around to initial state
-		                } else {
-		                    state += 1; // Advance to next configuration state
-		                }
-		            }
+		            input_empilhar(INPUT_MAIS);
 		        }
 
 		    /* ----------------------------------------------------------------------
@@ -1008,56 +1010,19 @@ int main(void) {
 		        if (HAL_GetTick() - last_press_dec > 50) {
 		            last_press_dec = HAL_GetTick();
 
-		            lcd_needs_update = true;
+		            input_empilhar(INPUT_MENOS);
 
-		            if (!(BT_DEC_GPIO_Port->IDR & GPIO_IDR_ID4)) {
-
-		                // Button was PRESSED
-		                EXTI->FTSR1 &= ~EXTI_FTSR1_FT4;
-		                EXTI->RTSR1 |= EXTI_RTSR1_RT4;
-
-		                __HAL_TIM_SET_COUNTER(&htim6, 0);
-		                HAL_TIM_Base_Start_IT(&htim6);
-
-		            } else {
-
-		                // Button was RELEASED
-		                HAL_TIM_Base_Stop_IT(&htim6);
-
-		                EXTI->RTSR1 &= ~EXTI_RTSR1_RT4;
-		                EXTI->FTSR1 |= EXTI_FTSR1_FT4;
-
-		                // --- APPLY MULTIPLIER LOGIC ---
-		                if (state == Config_Cycles) {
-		                    parametros.Target_Counts += increment[index_inc];
-		                } else if (state == Config_Rising) {
-		                    parametros.Rise_time += increment[index_inc];
-		                } else if (state == Config_Falling) {
-		                    parametros.Fall_time += increment[index_inc];
-		                } else if (state == Config_Off_Cycles) {
-		                    parametros.Offset_Counts += increment[index_inc];
-		                }
-		            }
 		        }
 			/* ----------------------------------------------------------------------
 			 * SET / START-STOP BUTTON HANDLING
 			 * ---------------------------------------------------------------------- */
 		} else if (GPIO_Pin == BT_SET_Pin) {
-			if(state ==Running) return;
 
 			static uint32_t last_press_set = 0;
 
 			// Software debounce: 50ms threshold for the SET button
 			if (HAL_GetTick() - last_press_set > 50) {
-				last_press_set = HAL_GetTick(); // Update the debounce timestamp
-
-				// Toggle system state between Start (Idle/Ready) and Running (Active)
-				if (state == Start) {
-					state = Initializing;
-				}
-
-				// Flag the LCD to update its UI with the new execution state
-				lcd_needs_update = true;
+				input_empilhar(INPUT_ENTER);
 			}
 
 
@@ -1065,12 +1030,11 @@ int main(void) {
 			 * STOP BUTTON HANDLING
 			 * ---------------------------------------------------------------------- */
 		}else if(GPIO_Pin == BT_STOP_Pin ){
-			if(state != Running) return;
 			static uint32_t last_press_stop = 0;
 
 			if (HAL_GetTick() - last_press_stop > 50) {
 				last_press_stop = HAL_GetTick(); // Update the debounce timestamp
-				emergency_stop = 1;
+				input_empilhar(INPUT_RETURN);
 
 			}
 
@@ -1083,6 +1047,26 @@ int main(void) {
 //		}
 //		USART3->TDR = c;
 //	}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 	/* USER CODE END 4 */
 
 	/* USER CODE BEGIN Header */

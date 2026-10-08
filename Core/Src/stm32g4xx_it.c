@@ -84,6 +84,8 @@ extern volatile uint32_t  voltas_tim;
 extern  int32_t pos_antiga;
 extern float rpm_rampa ; // Setpoint dinâmico (a rampa) que o PID vai perseguir
 extern volatile uint8_t fall_end;
+extern volatile uint8_t rise_ramp;
+extern volatile Input_t input_prioritario;
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -244,6 +246,7 @@ void EXTI9_5_IRQHandler(void) {
 
 	/* USER CODE END EXTI9_5_IRQn 0 */
 	HAL_GPIO_EXTI_IRQHandler(BT_SET_Pin);
+	HAL_GPIO_EXTI_IRQHandler(BT_STOP_Pin);
 	/* USER CODE BEGIN EXTI9_5_IRQn 1 */
 
 	/* USER CODE END EXTI9_5_IRQn 1 */
@@ -346,7 +349,8 @@ void TIM3_IRQHandler(void) {
 
 		if (rpm_rampa < alvo_atual) {
 			// ACCELERATION PHASE
-			if (parametros.Rise_time > 0) {
+			if (parametros.Rise_time > 0 & rise_ramp) {
+
 				// Calculate how much RPM to add per control cycle
 				float passo_subida = (max_rpm_referencia
 						/ (float) parametros.Rise_time) * periodo_ms;
@@ -354,11 +358,12 @@ void TIM3_IRQHandler(void) {
 
 				// Clamp the ramped value to not overshoot the target
 				if (rpm_rampa > alvo_atual)
+					rise_ramp = 0;
 					rpm_rampa = alvo_atual;
 			} else {
 				rpm_rampa = alvo_atual; // Step response (No ramp)
 			}
-		} else if (rpm_rampa > alvo_atual) {
+		} else if (rpm_rampa > alvo_atual & emergency_stop) {
 			// DECELERATION PHASE (Uses standard Fall_time, even during emergency stops)
 			if (parametros.Fall_time > 0) {
 				// Calculate how much RPM to subtract per control cycle
@@ -370,10 +375,12 @@ void TIM3_IRQHandler(void) {
 				if (rpm_rampa < alvo_atual){
 					rpm_rampa = alvo_atual;
 					fall_end =1;
+					input_prioritario = INPUT_RETURN;
 				}
 			} else {
 				rpm_rampa = alvo_atual; // Step response (No ramp)
 				fall_end =1;
+				input_prioritario = INPUT_RETURN;;
 			}
 		}
 

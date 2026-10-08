@@ -31,7 +31,8 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  ../Drivers/BSP/STM32G4xx_Nucleo/stm32g4xx_nucleo.h \
  ../Drivers/BSP/STM32G4xx_Nucleo/stm32g4xx_nucleo_errno.h \
  ../Core/Inc/stm32g4xx_nucleo_conf.h ../Core/Inc/motor_encoder.h \
- ../Core/Inc/main.h ../Core/Inc/LCD1602.h ../Core/Inc/motor_encoder.h \
+ ../Core/Inc/main.h ../Core/Inc/LCD1602.h ../Core/Inc/StateMachine.h \
+ ../Core/Inc/stm32g4xx_it.h ../Core/Inc/PID.h ../Core/Inc/motor_encoder.h \
  ../Core/Inc/LCD1602.h ../Core/Inc/PID.h
 ../Core/Inc/main.h:
 ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h:
@@ -69,6 +70,9 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
 ../Core/Inc/motor_encoder.h:
 ../Core/Inc/main.h:
 ../Core/Inc/LCD1602.h:
+../Core/Inc/StateMachine.h:
+../Core/Inc/stm32g4xx_it.h:
+../Core/Inc/PID.h:
 ../Core/Inc/motor_encoder.h:
 ../Core/Inc/LCD1602.h:
 ../Core/Inc/PID.h:

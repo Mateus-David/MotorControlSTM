@@ -1,0 +1,6 @@
+../Core/Src/StateMachine.c:106:8:Rotina_de_modo	24	static
+../Core/Src/StateMachine.c:143:14:ajustar_valor	32	static
+../Core/Src/StateMachine.c:154:13:ajustar_parametro	16	static
+../Core/Src/StateMachine.c:201:16:Rotina_de_configuracao	40	static
+../Core/Src/StateMachine.c:353:14:Rotina_de_ativacao	16	static
+../Core/Src/StateMachine.c:436:8:Maquina_executar	24	static

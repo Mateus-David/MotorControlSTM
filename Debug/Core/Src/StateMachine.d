@@ -1,5 +1,6 @@
-Core/Src/LCD1602.o: ../Core/Src/LCD1602.c ../Core/Inc/LCD1602.h \
- ../Core/Inc/main.h ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h \
+Core/Src/StateMachine.o: ../Core/Src/StateMachine.c \
+ ../Core/Inc/StateMachine.h ../Core/Inc/main.h \
+ ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h \
  ../Core/Inc/stm32g4xx_hal_conf.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_rcc.h \
  ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal_def.h \
@@ -33,7 +34,7 @@ Core/Src/LCD1602.o: ../Core/Src/LCD1602.c ../Core/Inc/LCD1602.h \
  ../Core/Inc/stm32g4xx_nucleo_conf.h ../Core/Inc/motor_encoder.h \
  ../Core/Inc/LCD1602.h ../Core/Inc/StateMachine.h \
  ../Core/Inc/stm32g4xx_it.h ../Core/Inc/PID.h
-../Core/Inc/LCD1602.h:
+../Core/Inc/StateMachine.h:
 ../Core/Inc/main.h:
 ../Drivers/STM32G4xx_HAL_Driver/Inc/stm32g4xx_hal.h:
 ../Core/Inc/stm32g4xx_hal_conf.h:

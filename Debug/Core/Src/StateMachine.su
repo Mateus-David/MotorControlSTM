@@ -1,0 +1,10 @@
+../Core/Src/StateMachine.c:146:13:lcd_linha	16	static
+../Core/Src/StateMachine.c:153:13:desenhar_config	40	static
+../Core/Src/StateMachine.c:187:13:mostrar_rodando	8	static
+../Core/Src/StateMachine.c:205:8:Rotina_de_modo	24	static
+../Core/Src/StateMachine.c:244:14:ajustar_valor	24	static
+../Core/Src/StateMachine.c:255:13:ajustar_parametro	24	static
+../Core/Src/StateMachine.c:307:16:Rotina_de_configuracao	24	static
+../Core/Src/StateMachine.c:419:14:Rotina_de_ativacao	32	static
+../Core/Src/StateMachine.c:511:8:Maquina_executar	24	static
+../Core/Src/StateMachine.c:555:6:Maquina_evento_pendente	4	static
